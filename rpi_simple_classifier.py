@@ -194,12 +194,14 @@ class SimplePiClassifier:
         cap.set(cv2.CAP_PROP_FPS, 10)
         
         frame_count = 0
+        last_status_time = time.time()
         
         print("Pi Detection Started. Press Ctrl+C to quit.")
         if self.model:
             print("Using trained model (94% accuracy)")
         else:
             print("Using basic OpenCV detection")
+        print("Processing frames... (status every 30 seconds)")
         
         try:
             while True:
@@ -208,6 +210,12 @@ class SimplePiClassifier:
                     break
                 
                 frame_count += 1
+                current_time = time.time()
+                
+                # Status update every 30 seconds
+                if current_time - last_status_time > 30:
+                    print(f"Status: Running... Processed {frame_count} frames")
+                    last_status_time = current_time
                 
                 # Process every 30 frames
                 if frame_count % 30 == 0:
@@ -221,11 +229,15 @@ class SimplePiClassifier:
                         animal, confidence, risk = self.simple_animal_detection(frame)
                     
                     if animal and confidence > 0.6:
-                        print(f"Detected: {animal} ({int(confidence*100)}%) - {risk}")
+                        print(f"*** DETECTION: {animal} ({int(confidence*100)}%) - {risk} ***")
                         
                         # Send Telegram alert
                         if self.enable_telegram and self.telegram_notifier:
                             self.send_telegram_alert(animal, confidence, risk, frame)
+                    else:
+                        # Show it's checking (every 10th processing cycle)
+                        if (frame_count // 30) % 10 == 0:
+                            print(f"Scanning... Frame {frame_count} (no animals detected)")
                         
                         # Display on frame
                         cv2.putText(frame, f"{animal} ({int(confidence*100)}%)", 
