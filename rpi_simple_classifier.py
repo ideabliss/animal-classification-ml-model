@@ -134,22 +134,65 @@ class SimplePiClassifier:
             return None, 0, None
     
     def simple_animal_detection(self, frame):
-        """Fallback basic detection if model fails"""
+        """Improved basic detection with multiple color ranges"""
         try:
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            lower_brown = np.array([10, 50, 20])
-            upper_brown = np.array([20, 255, 200])
-            mask = cv2.inRange(hsv, lower_brown, upper_brown)
+            
+            # Multiple color masks for better detection
+            # Brown colors (common in animals)
+            lower_brown = np.array([8, 50, 20])
+            upper_brown = np.array([25, 255, 200])
+            mask1 = cv2.inRange(hsv, lower_brown, upper_brown)
+            
+            # Dark colors (black/dark brown animals)
+            lower_dark = np.array([0, 0, 0])
+            upper_dark = np.array([180, 255, 80])
+            mask2 = cv2.inRange(hsv, lower_dark, upper_dark)
+            
+            # Gray colors (elephants, etc.)
+            lower_gray = np.array([0, 0, 50])
+            upper_gray = np.array([180, 50, 200])
+            mask3 = cv2.inRange(hsv, lower_gray, upper_gray)
+            
+            # Combine all masks
+            mask = cv2.bitwise_or(mask1, mask2)
+            mask = cv2.bitwise_or(mask, mask3)
+            
+            # Remove noise
+            kernel = np.ones((5,5), np.uint8)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+            mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
             
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             for contour in contours:
                 area = cv2.contourArea(contour)
-                if area > 10000:
-                    return "Unknown Animal", 0.60, "MEDIUM THREAT"
+                if area > 3000:  # Lower threshold for better detection
+                    x, y, w, h = cv2.boundingRect(contour)
+                    aspect_ratio = w / h
+                    
+                    # Classify based on size and shape
+                    if area > 30000:  # Very large
+                        if aspect_ratio > 1.5:
+                            return "Elephant", 0.75, "HIGH THREAT"
+                        else:
+                            return "Bear", 0.80, "EXTREME THREAT"
+                    elif area > 15000:  # Large
+                        if aspect_ratio > 1.8:
+                            return "Horse", 0.70, "LIVESTOCK"
+                        else:
+                            return "Wild Boar", 0.75, "HIGH THREAT"
+                    elif area > 8000:  # Medium
+                        if aspect_ratio > 1.5:
+                            return "Deer", 0.65, "MEDIUM THREAT"
+                        else:
+                            return "Cow", 0.70, "LIVESTOCK"
+                    else:  # Small
+                        return "Birds", 0.60, "LOW RISK"
             
             return None, 0, None
-        except:
+        except Exception as e:
+            print(f"Detection error: {e}")
             return None, 0, None
     
     def get_risk_level(self, animal):
@@ -203,6 +246,19 @@ class SimplePiClassifier:
             print("Using basic OpenCV detection")
         print("Processing frames... (status every 30 seconds)")
         
+        # Send startup message to Telegram
+        if self.enable_telegram and self.telegram_notifier:
+            startup_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(startup_frame, 'FARM DETECTION STARTED', (50, 200), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 3)
+            cv2.putText(startup_frame, 'System Online & Monitoring', (80, 280), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            success = self.telegram_notifier.send_alert("System", 1.0, "ONLINE", startup_frame)
+            if success:
+                print("Startup message sent to Telegram")
+            else:
+                print("Failed to send startup message")
+        
         try:
             while True:
                 ret, frame = cap.read()
@@ -238,6 +294,16 @@ class SimplePiClassifier:
                         # Show it's checking (every 10th processing cycle)
                         if (frame_count // 30) % 10 == 0:
                             print(f"Scanning... Frame {frame_count} (no animals detected)")
+                            # Debug: Show if any contours detected
+                            try:
+                                hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                                mask = cv2.inRange(hsv, np.array([8, 50, 20]), np.array([25, 255, 200]))
+                                contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                                if contours:
+                                    max_area = max([cv2.contourArea(c) for c in contours])
+                                    print(f"  Debug: Largest object area = {max_area} (need >3000 for detection)")
+                            except:
+                                pass
                         
                         # Display on frame
                         cv2.putText(frame, f"{animal} ({int(confidence*100)}%)", 
