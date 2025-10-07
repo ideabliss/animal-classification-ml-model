@@ -233,10 +233,10 @@ class SimplePiClassifier:
                         cv2.putText(frame, risk, (10, 60), 
                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                 
-                # Show frame (comment out for headless)
-                cv2.imshow('Simple Pi Detection', frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
+                # Headless mode - no display (for SSH)
+                # cv2.imshow('Simple Pi Detection', frame)
+                # if cv2.waitKey(1) & 0xFF == ord('q'):
+                #     break
                 
                 time.sleep(0.1)
                 
