@@ -4,22 +4,46 @@ import os
 import time
 from datetime import datetime
 
+# Try to import torch for trained model
+try:
+    import torch
+    import torch.nn as nn
+    import torchvision.transforms as transforms
+    from torchvision import models
+    from PIL import Image
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    print("PyTorch not available, using basic detection")
+
 class SimplePiClassifier:
     def __init__(self, enable_telegram=False, bot_token=None, chat_id=None):
-        print("Simple Pi Farm Detection (OpenCV-based)")
+        print("Pi Farm Detection with Trained Model")
         
-        # Animal detection using color/shape analysis
+        # Farm animal classes (matching trained model)
         self.class_names = [
-            'Bear', 'Tiger', 'Wild Boar', 'Elephant', 'Deer',
-            'Cow', 'Horse', 'Goat', 'Bird', 'Unknown Animal'
+            'Armadilles', 'Bear', 'Birds', 'Cow', 'Crocodile',
+            'Deer', 'Elephant', 'Goat', 'Horse', 'Jaguar',
+            'Monkey', 'Rabbit', 'Skunk', 'Tiger', 'Wild Boar'
         ]
         
-        # Risk categories
-        self.extreme_threats = ['Bear', 'Tiger']
-        self.high_threats = ['Wild Boar', 'Elephant']
-        self.medium_threats = ['Deer']
-        self.farm_animals = ['Cow', 'Horse', 'Goat']
-        self.neutral_animals = ['Bird']
+        # Load trained model if available
+        self.model = None
+        self.transform = None
+        if TORCH_AVAILABLE and os.path.exists('farm_model_lightning_cpu.pth'):
+            try:
+                self.load_trained_model()
+                print("Trained model loaded (94% accuracy)")
+            except Exception as e:
+                print(f"Failed to load trained model: {e}")
+                print("Using basic OpenCV detection")
+        
+        # Risk categories (matching trained model)
+        self.extreme_threats = ['Bear', 'Tiger', 'Jaguar', 'Crocodile']
+        self.high_threats = ['Wild Boar', 'Elephant', 'Skunk']
+        self.medium_threats = ['Deer', 'Monkey', 'Armadilles']
+        self.farm_animals = ['Cow', 'Goat', 'Horse']
+        self.neutral_animals = ['Birds', 'Rabbit']
         
         # Telegram setup
         self.enable_telegram = enable_telegram
@@ -43,6 +67,28 @@ class SimplePiClassifier:
         except:
             self.face_cascade = None
     
+    def load_trained_model(self):
+        """Load the trained MobileNet model"""
+        # Create MobileNet model architecture
+        self.model = models.mobilenet_v3_small(pretrained=False)
+        self.model.classifier = nn.Sequential(
+            nn.Linear(self.model.classifier[0].in_features, 256),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(256, len(self.class_names))
+        )
+        
+        # Load trained weights
+        self.model.load_state_dict(torch.load('farm_model_lightning_cpu.pth', map_location='cpu'))
+        self.model.eval()
+        
+        # Setup transforms
+        self.transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        ])
+    
     def detect_human_face(self, frame):
         """Simple face detection"""
         if self.face_cascade is None:
@@ -60,54 +106,47 @@ class SimplePiClassifier:
         except:
             return False
     
-    def simple_animal_detection(self, frame):
-        """Basic animal detection using motion and size"""
+    def classify_with_trained_model(self, frame):
+        """Use trained model for classification"""
+        if self.model is None or self.transform is None:
+            return None, 0, None
+        
         try:
-            # Convert to HSV for better color detection
-            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            # Prepare image
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(rgb_frame)
+            input_tensor = self.transform(pil_image).unsqueeze(0)
             
-            # Create mask for brown/dark colors (common in animals)
+            # Classify
+            with torch.no_grad():
+                outputs = self.model(input_tensor)
+                probabilities = torch.nn.functional.softmax(outputs, dim=1)[0]
+                confidence, predicted = torch.max(probabilities, 0)
+                
+                if confidence.item() > 0.7:  # Higher threshold for Pi
+                    animal = self.class_names[predicted.item()]
+                    risk = self.get_risk_level(animal)
+                    return animal, confidence.item(), risk
+            
+            return None, 0, None
+        except Exception as e:
+            print(f"Model classification error: {e}")
+            return None, 0, None
+    
+    def simple_animal_detection(self, frame):
+        """Fallback basic detection if model fails"""
+        try:
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
             lower_brown = np.array([10, 50, 20])
             upper_brown = np.array([20, 255, 200])
-            mask1 = cv2.inRange(hsv, lower_brown, upper_brown)
+            mask = cv2.inRange(hsv, lower_brown, upper_brown)
             
-            # Mask for darker colors
-            lower_dark = np.array([0, 0, 0])
-            upper_dark = np.array([180, 255, 50])
-            mask2 = cv2.inRange(hsv, lower_dark, upper_dark)
-            
-            # Combine masks
-            mask = cv2.bitwise_or(mask1, mask2)
-            
-            # Find contours
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
-            # Filter by size
             for contour in contours:
                 area = cv2.contourArea(contour)
-                if area > 5000:  # Minimum size for animal
-                    # Get bounding box
-                    x, y, w, h = cv2.boundingRect(contour)
-                    aspect_ratio = w / h
-                    
-                    # Simple classification based on size and shape
-                    if area > 50000:  # Very large
-                        if aspect_ratio > 1.5:
-                            return "Elephant", 0.75, "HIGH THREAT"
-                        else:
-                            return "Bear", 0.80, "EXTREME THREAT"
-                    elif area > 20000:  # Large
-                        if aspect_ratio > 1.8:
-                            return "Horse", 0.70, "LIVESTOCK"
-                        else:
-                            return "Wild Boar", 0.75, "HIGH THREAT"
-                    elif area > 10000:  # Medium
-                        if aspect_ratio > 1.5:
-                            return "Deer", 0.65, "MEDIUM THREAT"
-                        else:
-                            return "Cow", 0.70, "LIVESTOCK"
-                    else:  # Small
-                        return "Bird", 0.60, "LOW RISK"
+                if area > 10000:
+                    return "Unknown Animal", 0.60, "MEDIUM THREAT"
             
             return None, 0, None
         except:
@@ -127,8 +166,27 @@ class SimplePiClassifier:
         return "UNKNOWN"
     
     def run_camera(self, camera_id=0):
-        """Simple camera detection"""
-        cap = cv2.VideoCapture(camera_id)
+        """USB camera detection with trained model"""
+        # Try different backends for USB camera
+        cap = None
+        backends = [cv2.CAP_V4L2, cv2.CAP_ANY]
+        
+        for backend in backends:
+            try:
+                cap = cv2.VideoCapture(camera_id, backend)
+                if cap.isOpened():
+                    print(f"Camera opened with backend: {backend}")
+                    break
+                cap.release()
+            except:
+                continue
+        
+        if not cap or not cap.isOpened():
+            cap = cv2.VideoCapture(camera_id)
+        
+        if not cap.isOpened():
+            print("ERROR: Cannot open camera!")
+            return
         
         # Optimize for Pi
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -137,8 +195,11 @@ class SimplePiClassifier:
         
         frame_count = 0
         
-        print("Simple Pi Detection Started. Press Ctrl+C to quit.")
-        print("Note: This uses basic OpenCV detection (no AI model)")
+        print("Pi Detection Started. Press Ctrl+C to quit.")
+        if self.model:
+            print("Using trained model (94% accuracy)")
+        else:
+            print("Using basic OpenCV detection")
         
         try:
             while True:
@@ -154,8 +215,10 @@ class SimplePiClassifier:
                     if self.detect_human_face(frame):
                         continue
                     
-                    # Simple animal detection
-                    animal, confidence, risk = self.simple_animal_detection(frame)
+                    # Try trained model first, fallback to simple detection
+                    animal, confidence, risk = self.classify_with_trained_model(frame)
+                    if not animal:
+                        animal, confidence, risk = self.simple_animal_detection(frame)
                     
                     if animal and confidence > 0.6:
                         print(f"Detected: {animal} ({int(confidence*100)}%) - {risk}")
